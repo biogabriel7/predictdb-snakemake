@@ -1,0 +1,14 @@
+# PredictDb Snakemake Report Configuration
+
+report_title: "PredictDb Pipeline Execution Report"
+report_description: "Summary of execution, resource usage, and model performance"
+
+# Additional report sections
+sections:
+  overview:
+    title: "Pipeline Overview"
+    text: "This report summarizes the execution of the PredictDb model training pipeline."
+  
+  performance:
+    title: "Performance Metrics"
+    text: "Summary of model performance metrics across chromosomes." 

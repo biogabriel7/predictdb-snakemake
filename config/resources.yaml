@@ -1,0 +1,35 @@
+# PredictDb Snakemake Resources Configuration
+
+# Default resources
+default:
+  memory_mb: 2000
+  threads: 1
+
+# Resources for specific rules
+parse_gtf:
+  memory_mb: 4000
+  threads: 2
+
+split_genotype:
+  memory_mb: 8000
+  threads: 4
+
+transpose_gene_expr:
+  memory_mb: 4000
+  threads: 2
+
+generate_peer_factors:
+  memory_mb: 8000
+  threads: 4
+
+generate_pcs:
+  memory_mb: 4000
+  threads: 2
+
+train_model:
+  memory_mb: 8000
+  threads: 4
+
+make_database:
+  memory_mb: 4000
+  threads: 2 

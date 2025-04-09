@@ -1,0 +1,15 @@
+# PredictDb Snakemake Notifications Configuration
+
+# Email notification settings
+email:
+  enabled: false
+  to: ""
+  on_success: false
+  on_failure: true
+  smtp_server: ""
+  smtp_port: 25
+  smtp_username: ""
+  smtp_password: ""
+
+# Intermediate file handling
+keepIntermediate: false 

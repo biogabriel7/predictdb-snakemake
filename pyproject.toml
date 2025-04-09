@@ -1,0 +1,13 @@
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311"]
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.pylint]
+max-line-length = 100
+disable = ["C0111", "C0103", "C0303", "W0511"]
+ignore = ["CVS", ".git", ".pytest_cache", "__pycache__"] 
