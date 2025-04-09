@@ -2,7 +2,7 @@
 
 """
 Script to train Elastic Net models for predicting gene expression.
-Optimized for Apple M3 chip performance.
+Optimized for Apple M3 chip performance with Numba acceleration.
 """
 
 import numpy as np
@@ -13,11 +13,12 @@ from sklearn.preprocessing import StandardScaler
 import scipy.stats as stats
 import os
 import sys
-from scipy.stats import pearsonr
-import warnings
-import threading
 import multiprocessing as mp
 from functools import partial
+import warnings
+import numba as nb
+from numba import prange
+
 warnings.filterwarnings('ignore')
 
 # Get inputs from Snakemake
@@ -42,12 +43,133 @@ weight_summary_file = snakemake.output.weight_summary
 covariance_file = snakemake.output.covariance
 
 # Configure NumPy to use all available cores for BLAS operations
-# This is particularly effective on Apple Silicon
 os.environ["OMP_NUM_THREADS"] = str(n_threads)
 os.environ["OPENBLAS_NUM_THREADS"] = str(n_threads)
 os.environ["MKL_NUM_THREADS"] = str(n_threads)
 os.environ["VECLIB_MAXIMUM_THREADS"] = str(n_threads)
 os.environ["NUMEXPR_NUM_THREADS"] = str(n_threads)
+
+# Numba optimized functions
+@nb.njit(parallel=True, fastmath=True)
+def pearson_correlation_numba(x, y):
+    """
+    Numba-optimized Pearson correlation calculation.
+    
+    Args:
+        x: First array
+        y: Second array
+    
+    Returns:
+        Correlation coefficient
+    """
+    n = len(x)
+    mean_x = 0.0
+    mean_y = 0.0
+    
+    # Calculate means
+    for i in range(n):
+        mean_x += x[i]
+        mean_y += y[i]
+    
+    mean_x /= n
+    mean_y /= n
+    
+    # Calculate covariance and variances
+    cov_xy = 0.0
+    var_x = 0.0
+    var_y = 0.0
+    
+    for i in range(n):
+        x_diff = x[i] - mean_x
+        y_diff = y[i] - mean_y
+        cov_xy += x_diff * y_diff
+        var_x += x_diff * x_diff
+        var_y += y_diff * y_diff
+    
+    # Calculate correlation
+    if var_x > 0 and var_y > 0:
+        return cov_xy / np.sqrt(var_x * var_y)
+    else:
+        return 0.0
+
+@nb.njit(fastmath=True)
+def z_score_numba(corr, n):
+    """
+    Numba-optimized Z-score calculation for correlation.
+    
+    Args:
+        corr: Correlation coefficient
+        n: Sample size
+    
+    Returns:
+        Z-score
+    """
+    # Ensure correlation is within valid range to avoid NaN
+    corr = max(min(corr, 0.9999), -0.9999)
+    return 0.5 * np.log((1 + corr) / (1 - corr)) * np.sqrt(n - 3)
+
+@nb.njit(parallel=True, fastmath=True)
+def calculate_covariance_numba(X_scaled):
+    """
+    Numba-optimized covariance calculation.
+    
+    Args:
+        X_scaled: Scaled feature matrix
+    
+    Returns:
+        Covariance matrix
+    """
+    n, p = X_scaled.shape
+    cov = np.zeros((p, p))
+    
+    for i in prange(p):
+        for j in range(i, p):
+            cov_ij = 0.0
+            for k in range(n):
+                cov_ij += X_scaled[k, i] * X_scaled[k, j]
+            cov_ij /= n
+            cov[i, j] = cov_ij
+            cov[j, i] = cov_ij  # Symmetric matrix
+    
+    return cov
+
+@nb.njit(fastmath=True)
+def scale_matrix_numba(X):
+    """
+    Numba-optimized matrix scaling (standardization).
+    
+    Args:
+        X: Input matrix to scale
+    
+    Returns:
+        Scaled matrix
+    """
+    n, p = X.shape
+    X_scaled = np.zeros_like(X)
+    
+    for j in range(p):
+        # Calculate mean
+        col_mean = 0.0
+        for i in range(n):
+            col_mean += X[i, j]
+        col_mean /= n
+        
+        # Calculate standard deviation
+        col_std = 0.0
+        for i in range(n):
+            diff = X[i, j] - col_mean
+            col_std += diff * diff
+        col_std = np.sqrt(col_std / (n - 1))
+        
+        # Scale the column
+        if col_std > 0:
+            for i in range(n):
+                X_scaled[i, j] = (X[i, j] - col_mean) / col_std
+        else:
+            for i in range(n):
+                X_scaled[i, j] = 0.0
+    
+    return X_scaled
 
 def get_gene_annotation(gene_annot_file):
     """Parse gene annotation file"""
@@ -60,10 +182,17 @@ def get_snp_annotation(snp_file):
     return snp_df
 
 def get_genotype_data(genotype_file):
-    """Load genotype data"""
-    # For larger files, use chunking to reduce memory usage
-    geno_df = pd.read_csv(genotype_file, sep='\t')
-    return geno_df
+    """Load genotype data with memory optimization"""
+    # Using chunks for larger files
+    try:
+        geno_df = pd.read_csv(genotype_file, sep='\t')
+        return geno_df
+    except MemoryError:
+        # If memory error, try reading in chunks
+        chunks = []
+        for chunk in pd.read_csv(genotype_file, sep='\t', chunksize=10000):
+            chunks.append(chunk)
+        return pd.concat(chunks)
 
 def get_gene_expression(expression_file):
     """Load gene expression data"""
@@ -77,17 +206,39 @@ def get_covariates(covariates_file):
         return cov_df
     return None
 
+@nb.njit
+def is_in_window_numba(pos, start, end):
+    """Numba-optimized position check"""
+    return pos >= start and pos <= end
+
 def filter_by_gene(gene_id, snp_df, geno_df, expr_df, gene_annot_df, window=1000000):
-    """Filter SNPs within window size of gene"""
+    """Filter SNPs within window size of gene with Numba optimization"""
     gene_info = gene_annot_df[gene_annot_df['gene_id'] == gene_id].iloc[0]
     chr = gene_info['chr']
     start = max(0, gene_info['start'] - window)
     end = gene_info['end'] + window
     
     # Filter SNPs by position
-    snp_filtered = snp_df[(snp_df['chr'] == chr) & 
-                           (snp_df['pos'] >= start) & 
-                           (snp_df['pos'] <= end)]
+    # Convert to numpy arrays for faster filtering with Numba
+    if 'chr' in snp_df.columns and 'pos' in snp_df.columns:
+        chr_array = np.array(snp_df['chr'])
+        pos_array = np.array(snp_df['pos'])
+        indices = []
+        
+        # Use numpy for the chromosome filter
+        chr_match = (chr_array == chr)
+        
+        # For each matching chromosome, check position
+        for i in np.where(chr_match)[0]:
+            if is_in_window_numba(pos_array[i], start, end):
+                indices.append(i)
+        
+        snp_filtered = snp_df.iloc[indices]
+    else:
+        # Fallback to pandas if columns don't match expected names
+        snp_filtered = snp_df[(snp_df['chr'] == chr) & 
+                             (snp_df['pos'] >= start) & 
+                             (snp_df['pos'] <= end)]
     
     # Get genotypes for filtered SNPs
     snp_ids = snp_filtered['varID'].tolist()
@@ -99,8 +250,17 @@ def filter_by_gene(gene_id, snp_df, geno_df, expr_df, gene_annot_df, window=1000
     return snp_filtered, geno_filtered, gene_expr
 
 def calculate_correlation(y_true, y_pred):
-    """Calculate Pearson correlation and p-value"""
-    correlation, p_value = pearsonr(y_true, y_pred)
+    """Calculate Pearson correlation and p-value using Numba optimization"""
+    # Convert to numpy arrays in case they're pandas Series
+    y_true_np = np.array(y_true, dtype=np.float64)
+    y_pred_np = np.array(y_pred, dtype=np.float64)
+    
+    # Use Numba-optimized correlation calculation
+    correlation = pearson_correlation_numba(y_true_np, y_pred_np)
+    
+    # For p-value, we still use scipy since the computation is complex
+    _, p_value = stats.pearsonr(y_true, y_pred)
+    
     return correlation, p_value
 
 def train_elastic_net(X, y, covariates=None, n_folds=10, nested=False, alphas=None, l1_ratios=None):
@@ -120,9 +280,13 @@ def train_elastic_net(X, y, covariates=None, n_folds=10, nested=False, alphas=No
     else:
         X_combined = X
     
-    # Scale features
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_combined)
+    # Scale features using Numba optimization for large matrices
+    if X_combined.shape[0] > 1000 or X_combined.shape[1] > 100:
+        X_scaled = scale_matrix_numba(X_combined)
+    else:
+        # For smaller matrices, sklearn's implementation is efficient
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_combined)
     
     # Set up cross-validation
     cv = KFold(n_splits=n_folds, shuffle=True, random_state=42)
@@ -183,7 +347,9 @@ def train_elastic_net(X, y, covariates=None, n_folds=10, nested=False, alphas=No
             all_y_true.extend(y_true)
             all_y_pred.extend(y_pred)
         
-        r2_avg, p_value = calculate_correlation(all_y_true, all_y_pred)
+        all_y_true_np = np.array(all_y_true)
+        all_y_pred_np = np.array(all_y_pred)
+        r2_avg, p_value = calculate_correlation(all_y_true_np, all_y_pred_np)
         
         return final_model, r2_avg, p_value, best_alpha, best_l1_ratio
     else:
@@ -211,17 +377,19 @@ def train_elastic_net(X, y, covariates=None, n_folds=10, nested=False, alphas=No
         return model, r2_avg, p_value, model.alpha_, model.l1_ratio_
 
 def calculate_z_score(corr, n):
-    """Calculate Z-score for correlation"""
-    z = 0.5 * np.log((1 + corr) / (1 - corr)) * np.sqrt(n - 3)
-    return z
+    """Calculate Z-score for correlation using Numba optimization"""
+    return z_score_numba(corr, n)
 
 def calculate_covariance(X, weights):
-    """Calculate genetic covariance"""
+    """Calculate genetic covariance using Numba optimization"""
     # Scale genotypes
-    X_scaled = StandardScaler().fit_transform(X)
+    if X.shape[0] > 1000 or X.shape[1] > 100:
+        X_scaled = scale_matrix_numba(X)
+    else:
+        X_scaled = StandardScaler().fit_transform(X)
     
-    # Calculate covariance: X'X
-    covariance = np.dot(X_scaled.T, X_scaled) / X_scaled.shape[0]
+    # Calculate covariance: X'X with Numba acceleration
+    covariance = calculate_covariance_numba(X_scaled)
     
     return covariance
 
@@ -300,7 +468,7 @@ def process_gene(gene_id, gene_annot_df, snp_df, geno_df, expr_df, covariates_df
             X_model = X[:, nonzero_indices]
             weights = model.coef_[nonzero_indices]
             
-            # Calculate covariance
+            # Calculate covariance with Numba
             cov_matrix = calculate_covariance(X_model, weights)
             
             # Record covariance entries
@@ -342,47 +510,32 @@ def main():
     weight_summaries = []
     covariance_data = []
     
-    # Process each gene (potential for parallelization)
-    # For small datasets, process serially
-    if len(chrom_genes) <= 10:
-        for gene_id in chrom_genes:
-            model_summary, weights, covariances = process_gene(
-                gene_id, gene_annot_df, snp_df, geno_df, expr_df, 
-                covariates_df, nested_cv, n_folds
-            )
-            
-            if model_summary is not None:
-                model_summaries.append(model_summary)
-                weight_summaries.extend(weights)
-                covariance_data.extend(covariances)
-    else:
-        # For larger datasets, use multiprocessing
-        # Use max of 75% of the specified threads to avoid thread contention
-        n_parallel = max(1, min(4, int(n_threads * 0.75)))
-        print(f"Using {n_parallel} parallel processes for gene processing")
-        
-        # Create partial function with fixed parameters
-        process_gene_partial = partial(
-            process_gene,
-            gene_annot_df=gene_annot_df,
-            snp_df=snp_df,
-            geno_df=geno_df,
-            expr_df=expr_df,
-            covariates_df=covariates_df,
-            nested_cv=nested_cv,
-            n_folds=n_folds
-        )
-        
-        # Process genes in parallel
-        with mp.Pool(processes=n_parallel) as pool:
-            results = pool.map(process_gene_partial, chrom_genes)
-        
-        # Collect results
-        for model_summary, weights, covariances in results:
-            if model_summary is not None:
-                model_summaries.append(model_summary)
-                weight_summaries.extend(weights)
-                covariance_data.extend(covariances)
+    # Process genes in parallel
+    n_parallel = max(1, min(4, int(n_threads * 0.75)))
+    print(f"Using {n_parallel} parallel processes for gene processing")
+    
+    # Create partial function with fixed parameters
+    process_gene_partial = partial(
+        process_gene,
+        gene_annot_df=gene_annot_df,
+        snp_df=snp_df,
+        geno_df=geno_df,
+        expr_df=expr_df,
+        covariates_df=covariates_df,
+        nested_cv=nested_cv,
+        n_folds=n_folds
+    )
+    
+    # Process genes in parallel
+    with mp.Pool(processes=n_parallel) as pool:
+        results = pool.map(process_gene_partial, chrom_genes)
+    
+    # Collect results
+    for model_summary, weights, covariances in results:
+        if model_summary is not None:
+            model_summaries.append(model_summary)
+            weight_summaries.extend(weights)
+            covariance_data.extend(covariances)
     
     # Save results to files
     pd.DataFrame(model_summaries).to_csv(model_summary_file, sep='\t', index=False)
