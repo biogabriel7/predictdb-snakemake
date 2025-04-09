@@ -1,6 +1,3 @@
-# predictdb-snakemake
- Snakemake implementation for PredictDb - Python based
-
 # PredictDb-Snakemake
 
 A Python-based reimplementation of the PredictDb pipeline using Snakemake workflow manager.
