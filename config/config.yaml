@@ -1,0 +1,24 @@
+# PredictDb Snakemake Config
+
+# Input files
+gene_annotation: "file.gtf.gz"
+snp_annotation: "snp_annotation.txt"
+genotype: "genotype.txt"
+gene_exp: "gene_expression.txt"
+covariates: ""  # Optional path to additional covariates
+
+# Analysis parameters
+prefix: "Model_training"
+peer: false  # Use PEER factors
+pca: false   # Use PCA
+n_peer_factors: 15  # Number of PEER factors to calculate
+nested_cv: false  # Use nested cross-validation
+nfolds: 10  # Number of CV folds
+
+# Output settings
+outdir: "./results"
+
+# Resource limits
+max_memory: 480  # GB
+max_cpus: 48
+max_time: 240  # hours
