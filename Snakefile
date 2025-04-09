@@ -178,38 +178,193 @@ rule combine_covariates:
         "scripts/combine_covariates.py"
 
 # Model training per chromosome - this is the most resource-intensive step
-rule train_model:
+rule create_gene_partitions:
     input:
         gene_annot = "results/gene_annot.parsed.txt",
-        snp_file = "results/snp_annot.chr{chrom}.txt",
-        genotype_file = "results/genotype.chr{chrom}.txt",
+        snp_annot = expand("results/snp_annot.chr{chrom}.txt", chrom=CHROMOSOMES),
+        gene_annot_checkpoint = "results/checkpoints/gene_annot_parsed.checkpoint",
+        snp_checkpoint = "results/checkpoints/snp_annot_split.checkpoint"
+    output:
+        partitions_dir = directory("results/gene_partitions"),
+        checkpoint = touch("results/checkpoints/gene_partitions_created.checkpoint")
+    log:
+        "logs/create_gene_partitions.log"
+    benchmark:
+        "benchmarks/create_gene_partitions.txt"
+    params:
+        n_partitions = config.get("partitions", 10),
+        cis_window = config.get("cis_window", 1000000)
+    resources:
+        mem_mb = lambda wildcards, attempt: get_memory_mb(max_memory=resources["parse_gtf"]["memory_mb"]) * attempt,
+        threads = lambda wildcards, attempt: min(get_threads(), resources["parse_gtf"]["threads"])
+    threads: lambda wildcards, attempt: min(get_threads(), resources["parse_gtf"]["threads"])
+    script:
+        "scripts/create_balanced_partitions.py"
+
+# Create a checkpoint to generate partition list 
+checkpoint get_gene_partitions:
+    input:
+        partitions_dir = "results/gene_partitions",
+        checkpoint = "results/checkpoints/gene_partitions_created.checkpoint"
+    output:
+        partition_list = "results/gene_partitions/partition_list.txt"
+    run:
+        import glob
+        import os
+        
+        # Find all partition files in the directory
+        partition_files = glob.glob(os.path.join(input.partitions_dir, "partition_*.json"))
+        partition_ids = [os.path.basename(f).replace("partition_", "").replace(".json", "") for f in partition_files]
+        
+        # Write partition IDs to output file
+        with open(output.partition_list, "w") as f:
+            for partition_id in sorted(partition_ids):
+                f.write(f"{partition_id}\n")
+
+# Train models for each partition
+rule train_model_partitioned:
+    input:
+        gene_annot = "results/gene_annot.parsed.txt",
+        snp_files = expand("results/snp_annot.chr{chrom}.txt", chrom=CHROMOSOMES),
+        genotype_files = expand("results/genotype.chr{chrom}.txt", chrom=CHROMOSOMES),
         gene_expr = "results/gene_expression.txt",
         covariates = "results/covariates.txt" if config["peer"] or config["pca"] or config["covariates"] else [],
+        partition_file = "results/gene_partitions/partition_{partition_id}.json",
         gene_annot_checkpoint = "results/checkpoints/gene_annot_parsed.checkpoint",
-        snp_checkpoint = "results/checkpoints/snp_annot_split.checkpoint",
-        genotype_checkpoint = "results/checkpoints/genotype_split.checkpoint",
+        partitions_checkpoint = "results/checkpoints/gene_partitions_created.checkpoint",
         expr_checkpoint = "results/checkpoints/gene_expr_transposed.checkpoint",
         cov_checkpoint = "results/checkpoints/covariates_combined.checkpoint" if config["peer"] or config["pca"] or config["covariates"] else []
+    output:
+        model_summary = "results/partition_{partition_id}_model_summaries.txt",
+        weight_summary = "results/partition_{partition_id}_weight_summaries.txt",
+        covariance = "results/partition_{partition_id}_covariance.txt",
+        checkpoint = touch("results/checkpoints/partition_{partition_id}_complete.checkpoint")
+    log:
+        "logs/train_model_partition_{partition_id}.log"
+    benchmark:
+        "benchmarks/train_model_partition_{partition_id}.txt"
+    params:
+        partition_id = "{partition_id}",
+        nested_cv = config["nested_cv"],
+        n_folds = config["nfolds"],
+        r2_threshold = config.get("model_r2_threshold", 0.01),
+        cis_window = config.get("cis_window", 1000000)
+    resources:
+        mem_mb = lambda wildcards, attempt: get_memory_mb(max_memory=resources["train_model"]["memory_mb"]) * attempt,
+        threads = lambda wildcards, attempt: min(get_threads(), resources["train_model"]["threads"])
+    threads: lambda wildcards, attempt: min(get_threads(), resources["train_model"]["threads"])
+    script:
+        "scripts/train_model_partitioned.py"
+
+# Replace original train_model rule with a rule to collect partition results
+rule collect_partition_results:
+    input:
+        partition_files = lambda wildcards: expand("results/partition_{partition_id}_model_summaries.txt", 
+                                                partition_id=get_partition_ids()),
+        checkpoints = lambda wildcards: expand("results/checkpoints/partition_{partition_id}_complete.checkpoint", 
+                                            partition_id=get_partition_ids())
     output:
         model_summary = "results/chr{chrom}_model_summaries.txt",
         weight_summary = "results/chr{chrom}_weight_summaries.txt",
         covariance = "results/chr{chrom}_covariance.txt",
         checkpoint = touch("results/checkpoints/chr{chrom}_complete.checkpoint")
     log:
-        "logs/train_model_chr{chrom}.log"
-    benchmark:
-        "benchmarks/train_model_chr{chrom}.txt"
+        "logs/collect_partition_results_chr{chrom}.log"
     params:
-        chrom = "{chrom}",
-        nested_cv = config["nested_cv"],
-        n_folds = config["nfolds"]
+        chrom = "{chrom}"
     resources:
-        mem_mb = lambda wildcards, attempt: get_memory_mb(max_memory=resources["train_model"]["memory_mb"]) * attempt,
-        threads = lambda wildcards, attempt: min(get_threads(), resources["train_model"]["threads"])
-    threads: lambda wildcards, attempt: min(get_threads(), resources["train_model"]["threads"])
-    report: "Model training for chromosome {wildcards.chrom} completed, with genome-wide expression prediction models."
-    script:
-        "scripts/train_elastic_net_model.py"
+        mem_mb = 2000,
+        threads = 1
+    run:
+        import pandas as pd
+        import os
+
+        # Set up logging
+        import logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            handlers=[logging.FileHandler(log[0]), logging.StreamHandler()]
+        )
+        logger = logging.getLogger("collect_partitions")
+
+        # Collect model summaries
+        model_dfs = []
+        weight_dfs = []
+        cov_dfs = []
+        
+        for partition_file in input.partition_files:
+            partition_id = os.path.basename(partition_file).split("_")[1]
+            
+            # Read files for this partition
+            model_file = f"results/partition_{partition_id}_model_summaries.txt"
+            weight_file = f"results/partition_{partition_id}_weight_summaries.txt"
+            cov_file = f"results/partition_{partition_id}_covariance.txt"
+            
+            if os.path.exists(model_file) and os.path.getsize(model_file) > 0:
+                try:
+                    model_df = pd.read_csv(model_file, sep='\t')
+                    # Filter for models on this chromosome
+                    chrom_models = model_df[model_df['chromosome'] == params.chrom]
+                    if not chrom_models.empty:
+                        model_dfs.append(chrom_models)
+                except Exception as e:
+                    logger.warning(f"Error reading {model_file}: {str(e)}")
+            
+            if os.path.exists(weight_file) and os.path.getsize(weight_file) > 0:
+                try:
+                    weight_df = pd.read_csv(weight_file, sep='\t')
+                    # Filter for weights from genes on this chromosome
+                    if 'chromosome' in weight_df.columns:
+                        chrom_weights = weight_df[weight_df['chromosome'] == params.chrom]
+                        if not chrom_weights.empty:
+                            weight_dfs.append(chrom_weights)
+                except Exception as e:
+                    logger.warning(f"Error reading {weight_file}: {str(e)}")
+            
+            if os.path.exists(cov_file) and os.path.getsize(cov_file) > 0:
+                try:
+                    cov_df = pd.read_csv(cov_file, sep='\t')
+                    cov_dfs.append(cov_df)
+                except Exception as e:
+                    logger.warning(f"Error reading {cov_file}: {str(e)}")
+        
+        # Combine results
+        if model_dfs:
+            combined_models = pd.concat(model_dfs, ignore_index=True)
+            combined_models.to_csv(output.model_summary, sep='\t', index=False)
+            logger.info(f"Wrote {len(combined_models)} model summaries to {output.model_summary}")
+        else:
+            # Create empty file
+            pd.DataFrame().to_csv(output.model_summary, sep='\t', index=False)
+            logger.warning(f"No model summaries found for chromosome {params.chrom}")
+        
+        if weight_dfs:
+            combined_weights = pd.concat(weight_dfs, ignore_index=True)
+            combined_weights.to_csv(output.weight_summary, sep='\t', index=False)
+            logger.info(f"Wrote {len(combined_weights)} weight entries to {output.weight_summary}")
+        else:
+            # Create empty file
+            pd.DataFrame().to_csv(output.weight_summary, sep='\t', index=False)
+            logger.warning(f"No weight entries found for chromosome {params.chrom}")
+        
+        if cov_dfs:
+            combined_covs = pd.concat(cov_dfs, ignore_index=True)
+            combined_covs.to_csv(output.covariance, sep='\t', index=False)
+            logger.info(f"Wrote {len(combined_covs)} covariance entries to {output.covariance}")
+        else:
+            # Create empty file
+            pd.DataFrame().to_csv(output.covariance, sep='\t', index=False)
+            logger.warning(f"No covariance entries found for chromosome {params.chrom}")
+
+# Function to get partition IDs from checkpoint
+def get_partition_ids():
+    checkpoint_output = checkpoints.get_gene_partitions.get()
+    
+    with open(checkpoint_output.partition_list) as f:
+        partition_ids = [line.strip() for line in f]
+    
+    return partition_ids
 
 # Results aggregation - these are lightweight operations
 rule collect_model_summaries:

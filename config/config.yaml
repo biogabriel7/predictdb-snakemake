@@ -1,19 +1,36 @@
-# PredictDb Snakemake Config
+# PredictDB Configuration File
 
-# Input files
-gene_annotation: "file.gtf.gz"
-snp_annotation: "snp_annotation.txt"
-genotype: "genotype.txt"
-gene_exp: "gene_expression.txt"
-covariates: ""  # Optional path to additional covariates
+# Input data paths
+gene_annotation: "data/gene_annotation.gtf"
+snp_annotation: "data/snp_annotation.txt"
+genotype: "data/genotype.txt"
+gene_exp: "data/gene_expression.txt"
+covariates: "data/covariates.txt"  # Optional, set to "" if not using
 
-# Analysis parameters
-prefix: "Model_training"
-peer: false  # Use PEER factors
-pca: false   # Use PCA
-n_peer_factors: 15  # Number of PEER factors to calculate
-nested_cv: false  # Use nested cross-validation
-nfolds: 10  # Number of CV folds
+# Partitioning settings
+partitions: 20  # Number of gene partitions to create
+cis_window: 1000000  # Size of cis-window for SNP selection (1Mb)
+model_r2_threshold: 0.01  # Minimum R2 to save model
+
+# Model training parameters
+nested_cv: True  # Whether to use nested cross-validation
+nfolds: 5  # Number of cross-validation folds
+peer: True  # Whether to use PEER factors
+pca: False  # Whether to use PCA
+n_peer_factors: 15  # Number of PEER factors to use
+
+# Output database prefix (typically population identifier)
+prefix: "test"
+
+# Other settings
+keepIntermediate: True  # Whether to keep intermediate files
+
+# Reporting settings
+report_title: "PredictDB Gene Expression Models"
+report_description: "Elastic net models for predicting gene expression from genotypes"
+
+# Pipeline control
+n_genes_test: 0  # Set to a number > 0 to only process a subset of genes (for testing)
 
 # Output settings
 outdir: "./results"

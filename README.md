@@ -1,6 +1,6 @@
 # PredictDb-Snakemake
 
-A Python-based reimplementation of the PredictDb pipeline using Snakemake workflow manager.
+A high-performance Python-based implementation of the PredictDb pipeline using Snakemake workflow manager.
 
 ## Overview
 
@@ -23,6 +23,19 @@ This project is a complete Python reimplementation of the original [PredictDb-ne
 - Calculates genetic covariances between selected SNPs
 - Fully parallelizable workflow
 
+### New Features
+
+- **Automatic gzipped file handling**: Transparently reads and writes both plain text and gzipped files
+- **Dynamic resource allocation**: Automatically adjusts CPU and memory usage based on system load
+- **Benchmarking and performance visualization**: Tracks and visualizes resource usage for pipeline optimization
+- **Checkpointing and resume capability**: Allows interrupted pipelines to continue from the last completed step
+- **Comprehensive error handling**: Validates inputs and provides detailed error messages
+- **Email notifications**: Optional email alerts on pipeline completion or failure
+- **Progress tracking**: Real-time progress reporting for long-running operations
+- **Memory optimization**: Uses memory mapping and chunked processing for large datasets
+- **Containerization support**: Run the pipeline in Docker or Singularity containers for reproducibility
+- **Advanced logging system**: Detailed logs for monitoring and debugging
+
 ## Requirements
 
 - Python 3.7+
@@ -34,8 +47,10 @@ This project is a complete Python reimplementation of the original [PredictDb-ne
 - pandas
 - scikit-learn
 - scipy
-- matplotlib (optional, for visualization)
+- matplotlib
 - numba
+- psutil
+- snakemake
 
 ## Installation
 
@@ -47,43 +62,54 @@ This project is a complete Python reimplementation of the original [PredictDb-ne
 
 2. Create and activate a conda environment:
    ```bash
-   conda create -n predictdb-snakemake python=3.9 snakemake-minimal
+   conda env create -f environment.yaml
    conda activate predictdb-snakemake
    ```
 
-3. Install required Python packages:
+### Docker Installation (Optional)
+
+To use the containerized version:
+
+1. Make sure Docker is installed
+2. Build the container:
    ```bash
-   pip install numpy pandas scikit-learn scipy
+   ./build_container.sh
+   ```
+
+3. For Singularity:
+   ```bash
+   ./build_container.sh --singularity
    ```
 
 ## Usage
 
-1. Edit the configuration file at `config/config.yaml` to specify your input files and parameters:
-   ```yaml
-   # Input files
-   gene_annotation: "path/to/your/gene_annotation.gtf.gz"
-   snp_annotation: "path/to/your/snp_annotation.txt"
-   genotype: "path/to/your/genotype.txt"
-   gene_exp: "path/to/your/gene_expression.txt"
-   
-   # Analysis parameters
-   prefix: "Your_Study_Name"
-   peer: true  # Use PEER factors
-   pca: false  # Use PCA
-   n_peer_factors: 15
-   nested_cv: true
-   nfolds: 10
-   ```
+### Basic Usage
 
+1. Edit the configuration file at `config/config.yaml` to specify your input files and parameters.
 2. Run the pipeline:
    ```bash
-   snakemake --cores 8 -p
+   ./run.sh
    ```
 
-3. For cluster execution:
-   ```bash
-   snakemake --profile your-cluster-profile -j 100
-   ```
+### Advanced Usage
+
+#### Container Execution
+```bash
+# Run with Docker
+./run.sh --container
+
+# Run with Singularity
+./run.sh --container --container-cmd singularity
+```
+
+#### Additional Configuration
+
+The pipeline now uses multiple configuration files:
+
+- `config/config.yaml` - Main pipeline configuration
+- `config/resources.yaml` - Resource limits for each rule
+- `config/notifications.yaml` - Email notification settings
+- `config/report.yaml` - Report customization
 
 ## Pipeline Steps
 
@@ -109,27 +135,70 @@ This project is a complete Python reimplementation of the original [PredictDb-ne
    - Filter models based on performance
    - Calculate and filter covariances
 
+5. **Reporting and Visualization**:
+   - Generate HTML report
+   - Create benchmark visualizations
+
 ## Output Files
 
 - `results/predict_db_*.db`: SQLite database with prediction models
 - `results/Covariances.txt`: SNP covariance matrices
+- `results/report.html`: Pipeline execution report
+- `results/benchmark_plots/`: Performance visualizations
 - Various summary files in the results directory
+- Log files in the logs directory
 
 ## File Structure
 
 ```
 PredictDb-Snakemake/
 ├── Snakefile              # Main workflow definition
+├── run.sh                 # Execution script
+├── build_container.sh     # Container build script
+├── Dockerfile             # Container definition
 ├── config/                # Configuration files
-│   └── config.yaml        # User-editable parameters
+│   ├── config.yaml        # User-editable parameters
+│   ├── resources.yaml     # Resource allocation
+│   ├── notifications.yaml # Email notification settings
+│   └── report.yaml        # Report customization
 ├── scripts/               # Python scripts
 │   ├── train_elastic_net_model.py
 │   ├── make_db.py
 │   ├── generate_pcs.py
 │   └── ...
+│   └── utils/             # Utility modules
+│       ├── file_handling.py  # Gzipped file utilities
+│       ├── logger.py         # Logging utilities
+│       ├── resource_allocation.py  # Dynamic resource management
+│       └── ...
+├── logs/                  # Log files
+├── benchmarks/            # Benchmark measurements
 ├── results/               # Output directory
 └── docs/                  # Documentation
 ```
+
+## Utility Modules
+
+### file_handling.py
+Provides utilities for transparently handling both plain text and gzipped files.
+
+### logger.py
+Sets up a consistent logging system across all pipeline components.
+
+### resource_allocation.py
+Dynamic CPU and memory allocation based on system load.
+
+### progress_tracker.py
+Real-time progress reporting for long-running operations.
+
+### input_validation.py
+Validates input files to catch errors early.
+
+### adaptive_threading.py
+Dynamically adjusts thread pool size based on system load.
+
+### plot_benchmarks.py
+Visualizes pipeline performance metrics.
 
 ## License
 
@@ -140,7 +209,7 @@ This project is available under the [MIT License](LICENSE).
 If you use this software in your research, please cite:
 
 ```
-Your Name et al. PredictDb-Snakemake: A Python reimplementation of the PredictDb pipeline using Snakemake. GitHub (2025).
+Your Name et al. PredictDb-Snakemake: A Python implementation of the PredictDb pipeline using Snakemake. GitHub (2023).
 ```
 
 ## Acknowledgments

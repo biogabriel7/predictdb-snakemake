@@ -1,0 +1,181 @@
+import pandas as pd
+import numpy as np
+import os
+from snakemake.utils import min_version
+
+# Set minimum Snakemake version
+min_version("7.0.0")
+
+# Load configuration
+configfile: "config/config.yaml"
+include: "rules/common.smk"
+
+# Define output directories
+RESULTS_DIR = "results"
+LOG_DIR = "logs"
+BENCHMARK_DIR = "benchmarks"
+
+# Create directories
+os.makedirs(RESULTS_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(BENCHMARK_DIR, exist_ok=True)
+
+# Import resource configurations
+include: "rules/resources.smk"
+
+# Define wildcard constraints
+wildcard_constraints:
+    tissue = "|".join([re.escape(x) for x in config["tissues"]]),
+    chromosome = "|".join([str(x) for x in range(1, 23)] + ["X", "Y"])
+
+# Target rule
+rule all:
+    input:
+        expand(
+            os.path.join(RESULTS_DIR, "{tissue}", "model", "db", "{tissue}_predictdb.db"),
+            tissue=config["tissues"]
+        ),
+        expand(
+            os.path.join(RESULTS_DIR, "{tissue}", "model", "summary", "model_performance.html"),
+            tissue=config["tissues"]
+        ),
+        expand(
+            os.path.join(RESULTS_DIR, "{tissue}", "model", "summary", "gene_model_summary.txt"),
+            tissue=config["tissues"]
+        )
+
+# Include individual rules
+include: "rules/preprocess_genotype.smk"
+include: "rules/preprocess_expression.smk"
+include: "rules/calculate_covariates.smk"
+
+# Rule to create balanced partitions for a tissue
+checkpoint create_partitions:
+    input:
+        gene_annot = lambda wildcards: get_gene_annotation_file(wildcards.tissue),
+        snp_file = os.path.join(RESULTS_DIR, "snp_annotation.txt.gz"),
+        genotype_counts = os.path.join(RESULTS_DIR, "genotype", "snp_counts_by_chr.txt")
+    output:
+        partitions = os.path.join(RESULTS_DIR, "{tissue}", "partitions", "partitions.json")
+    params:
+        min_snps_per_partition = config.get("min_snps_per_partition", 5000),
+        max_snps_per_partition = config.get("max_snps_per_partition", 100000),
+        min_genes_per_partition = config.get("min_genes_per_partition", 20),
+        max_genes_per_partition = config.get("max_genes_per_partition", 500),
+        load_threshold = config.get("partition_load_threshold", 1.5)
+    resources:
+        mem_mb = get_resource_from_config(config, "create_partitions", "mem_mb", 4000),
+        disk_mb = get_resource_from_config(config, "create_partitions", "disk_mb", 4000),
+        runtime = get_resource_from_config(config, "create_partitions", "runtime", 30)
+    threads: get_resource_from_config(config, "create_partitions", "threads", 1)
+    log:
+        os.path.join(LOG_DIR, "{tissue}", "create_partitions.log")
+    benchmark:
+        os.path.join(BENCHMARK_DIR, "{tissue}", "create_partitions.tsv")
+    script:
+        "../scripts/create_balanced_partitions.py"
+
+# Train models for each partition
+rule train_model_partitioned:
+    input:
+        gene_annot = lambda wildcards: get_gene_annotation_file(wildcards.tissue),
+        gene_expr = lambda wildcards: get_expression_file(wildcards.tissue),
+        covariates = lambda wildcards: get_covariates_file(wildcards.tissue),
+        snp_file = os.path.join(RESULTS_DIR, "snp_annotation.txt.gz"),
+        genotype_file = os.path.join(RESULTS_DIR, "genotype", "genotype_processed.txt.gz"),
+        partitions = os.path.join(RESULTS_DIR, "{tissue}", "partitions", "partitions.json")
+    output:
+        model_summary = os.path.join(RESULTS_DIR, "{tissue}", "model", "partition_{partition}", "model_summary.txt"),
+        weight_summary = os.path.join(RESULTS_DIR, "{tissue}", "model", "partition_{partition}", "weight.txt"),
+        covariance = os.path.join(RESULTS_DIR, "{tissue}", "model", "partition_{partition}", "covariance.txt")
+    params:
+        partition_id = lambda wildcards: int(wildcards.partition),
+        nested_cv = config.get("nested_cv", False),
+        n_folds = config.get("n_folds", 10)
+    resources:
+        mem_mb = get_resource_from_config(config, "train_model", "mem_mb", 16000),
+        disk_mb = get_resource_from_config(config, "train_model", "disk_mb", 8000),
+        runtime = get_resource_from_config(config, "train_model", "runtime", 240)
+    threads: get_resource_from_config(config, "train_model", "threads", 4)
+    log:
+        os.path.join(LOG_DIR, "{tissue}", "model", "train_model_partition_{partition}.log")
+    benchmark:
+        os.path.join(BENCHMARK_DIR, "{tissue}", "model", "train_model_partition_{partition}.tsv")
+    script:
+        "../scripts/train_elastic_net_model_partitioned.py"
+
+# Helper function to get all partitions for a tissue
+def get_partitions(wildcards):
+    checkpoint_output = checkpoints.create_partitions.get(**wildcards).output.partitions
+    
+    with open(checkpoint_output) as f:
+        import json
+        partitions = json.load(f)
+    
+    # Return list of partition files
+    return expand(
+        os.path.join(RESULTS_DIR, "{{tissue}}", "model", "partition_{partition}", "{file_type}.txt"),
+        partition=range(len(partitions)),
+        file_type=["model_summary", "weight", "covariance"]
+    )
+
+# Merge model results from all partitions
+rule merge_partition_results:
+    input:
+        get_partitions
+    output:
+        model_summary = os.path.join(RESULTS_DIR, "{tissue}", "model", "model_summary.txt"),
+        weight_summary = os.path.join(RESULTS_DIR, "{tissue}", "model", "weight.txt"),
+        covariance = os.path.join(RESULTS_DIR, "{tissue}", "model", "covariance.txt")
+    resources:
+        mem_mb = get_resource_from_config(config, "merge_results", "mem_mb", 8000),
+        disk_mb = get_resource_from_config(config, "merge_results", "disk_mb", 8000),
+        runtime = get_resource_from_config(config, "merge_results", "runtime", 30)
+    threads: get_resource_from_config(config, "merge_results", "threads", 1)
+    log:
+        os.path.join(LOG_DIR, "{tissue}", "model", "merge_results.log")
+    benchmark:
+        os.path.join(BENCHMARK_DIR, "{tissue}", "model", "merge_results.tsv")
+    script:
+        "../scripts/merge_partition_results.py"
+
+# Create database
+rule create_db:
+    input:
+        model_summary = os.path.join(RESULTS_DIR, "{tissue}", "model", "model_summary.txt"),
+        weight_summary = os.path.join(RESULTS_DIR, "{tissue}", "model", "weight.txt"),
+        covariance = os.path.join(RESULTS_DIR, "{tissue}", "model", "covariance.txt"),
+        gene_annotation = lambda wildcards: get_gene_annotation_file(wildcards.tissue)
+    output:
+        db = os.path.join(RESULTS_DIR, "{tissue}", "model", "db", "{tissue}_predictdb.db")
+    resources:
+        mem_mb = get_resource_from_config(config, "create_db", "mem_mb", 8000),
+        disk_mb = get_resource_from_config(config, "create_db", "disk_mb", 8000),
+        runtime = get_resource_from_config(config, "create_db", "runtime", 30)
+    threads: get_resource_from_config(config, "create_db", "threads", 1)
+    log:
+        os.path.join(LOG_DIR, "{tissue}", "model", "create_db.log")
+    benchmark:
+        os.path.join(BENCHMARK_DIR, "{tissue}", "model", "create_db.tsv")
+    script:
+        "../scripts/create_db.py"
+
+# Generate model performance report
+rule model_report:
+    input:
+        model_summary = os.path.join(RESULTS_DIR, "{tissue}", "model", "model_summary.txt"),
+        gene_annotation = lambda wildcards: get_gene_annotation_file(wildcards.tissue)
+    output:
+        model_report = os.path.join(RESULTS_DIR, "{tissue}", "model", "summary", "model_performance.html"),
+        gene_summary = os.path.join(RESULTS_DIR, "{tissue}", "model", "summary", "gene_model_summary.txt")
+    resources:
+        mem_mb = get_resource_from_config(config, "model_report", "mem_mb", 4000),
+        disk_mb = get_resource_from_config(config, "model_report", "disk_mb", 4000),
+        runtime = get_resource_from_config(config, "model_report", "runtime", 30)
+    threads: get_resource_from_config(config, "model_report", "threads", 1)
+    log:
+        os.path.join(LOG_DIR, "{tissue}", "model", "model_report.log")
+    benchmark:
+        os.path.join(BENCHMARK_DIR, "{tissue}", "model", "model_report.tsv")
+    script:
+        "../scripts/generate_model_report.py" 
