@@ -219,3 +219,38 @@ This project is a reimplementation of the [PredictDb-nextflow](https://github.co
 ## Contact
 
 For questions or issues, please open an issue on GitHub or contact [your email or contact information].
+
+## Web Monitoring Interface
+
+The pipeline includes a web-based monitoring interface to track progress and visualize results in real-time.
+
+### Running the Web Interface
+
+To start the monitoring interface, run:
+
+```bash
+streamlit run scripts/monitor.py
+```
+
+This will launch a web server, typically at http://localhost:8501
+
+### Features
+
+The monitoring interface provides:
+
+1. **Pipeline Progress**: Real-time tracking of completed steps and overall progress
+2. **Partition Balance**: Visualization of gene distribution across partitions
+3. **Model Performance**: Statistics and visualizations for trained models
+
+### Screenshots
+
+![Pipeline Progress](docs/images/monitor_progress.png)
+![Partition Balance](docs/images/monitor_partitions.png)
+![Model Performance](docs/images/monitor_performance.png)
+
+### Configuration
+
+The monitor can be configured through the sidebar:
+- **Results directory**: Change the location of result files
+- **Auto refresh**: Toggle automatic page refreshing
+- **Refresh interval**: Adjust how frequently the page updates
