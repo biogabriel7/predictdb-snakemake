@@ -50,4 +50,7 @@ if [ "$SINGULARITY" = true ]; then
     echo "Singularity container built successfully: predictdb-snakemake.sif"
 fi
 
-echo "Container build process complete." 
+echo "Container build process complete."
+
+# Make sure you're in the project directory (where environment.yaml is located)
+conda env update -f environment.yaml --prune 

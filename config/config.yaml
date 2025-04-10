@@ -1,11 +1,11 @@
 # PredictDB Configuration File
 
 # Input data paths
-gene_annotation: "data/gene_annotation.gtf"
-snp_annotation: "data/snp_annotation.txt"
-genotype: "data/genotype.txt"
-gene_exp: "data/gene_expression.txt"
-covariates: "data/covariates.txt"  # Optional, set to "" if not using
+gene_annotation: "data/gene_annotation/Gene_anno.txt"
+snp_annotation: "data/snp_annotation/snp_annot_filtered.txt"
+genotype: "data/genotype_data/filtered_genotypes.txt"
+gene_exp: "data/expression_data/neurons_predictions.txt.gz"  # Change this for different cell types
+covariates: ""  # Not using covariates
 
 # Partitioning settings
 partitions: 20  # Number of gene partitions to create
@@ -20,13 +20,13 @@ pca: False  # Whether to use PCA
 n_peer_factors: 15  # Number of PEER factors to use
 
 # Output database prefix (typically population identifier)
-prefix: "test"
+prefix: "neurons"  # Set to match the cell type
 
 # Other settings
 keepIntermediate: True  # Whether to keep intermediate files
 
 # Reporting settings
-report_title: "PredictDB Gene Expression Models"
+report_title: "PredictDB Gene Expression Models for Neurons"
 report_description: "Elastic net models for predicting gene expression from genotypes"
 
 # Pipeline control
@@ -36,6 +36,6 @@ n_genes_test: 0  # Set to a number > 0 to only process a subset of genes (for te
 outdir: "./results"
 
 # Resource limits
-max_memory: 480  # GB
-max_cpus: 48
+max_memory: 32  # GB - Adjusted based on available system resources
+max_cpus: 8     # Adjusted based on available system resources
 max_time: 240  # hours
